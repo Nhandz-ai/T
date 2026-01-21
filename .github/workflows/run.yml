@@ -1,0 +1,62 @@
+name: Windows Tailscale
+on:
+  workflow_dispatch:
+concurrency:
+  group: vps
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 395
+    steps:
+    - uses: actions/checkout@v4
+    - name: Setup
+      shell: pwsh
+      run: |
+        $pw = ConvertTo-SecureString "Vps@aZnyBQKB5" -AsPlainText -Force
+        Set-LocalUser runneradmin -Password $pw
+        Set-ItemProperty 'HKLM:SystemCurrentControlSetControlTerminal Server' -Name "fDenyTSConnections" -Value 0
+        Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+    - name: Tailscale
+      shell: pwsh
+      run: |
+        Invoke-WebRequest https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi -OutFile ts.msi
+        Start-Process msiexec -ArgumentList '/i','ts.msi','/quiet' -Wait
+        Start-Sleep 20
+        $ts = "$env:ProgramFilesTailscale	ailscale.exe"
+        Start-Process $ts -ArgumentList "up","--hostname=gh-rdp" -WindowStyle Hidden
+        for ($i = 0; $i -lt 60; $i++) {
+          Start-Sleep 3
+          $ip = & $ts ip -4 2>&1 | Out-String
+          if ($ip -match '^100.') { "$($ip.Trim()):3389|Vps@aZnyBQKB5" | Out-File info.txt -NoNewline; break }
+          $st = & $ts status 2>&1 | Out-String
+          if ($st -match 'https://login.tailscale.com/a/[a-zA-Z0-9]+') {
+            "WAITING_AUTH|$($Matches[0])" | Out-File info.txt -NoNewline
+            break
+          }
+        }
+        if (!(Test-Path info.txt)) { "PENDING|Starting..." | Out-File info.txt -NoNewline }
+    - uses: actions/upload-artifact@v4
+      with:
+        name: result
+        path: info.txt
+        overwrite: true
+    - name: Wait
+      shell: pwsh
+      run: |
+        $ts = "$env:ProgramFilesTailscale	ailscale.exe"
+        for ($i = 0; $i -lt 120; $i++) {
+          $ip = & $ts ip -4 2>&1 | Out-String
+          if ($ip -match '^100.') { "$($ip.Trim()):3389|Vps@aZnyBQKB5" | Out-File info.txt -NoNewline; break }
+          Start-Sleep 5
+        }
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: result
+        path: info.txt
+        overwrite: true
+    - name: Keep
+      if: always()
+      shell: pwsh
+      run: Start-Sleep 21600
